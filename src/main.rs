@@ -7,9 +7,11 @@ use std::{
 
 use std::{env, fs, path, process, u8};
 
+const STACK_SIZE: usize = 1024 * 1024;
 const CHROOT_DIR_NAME: &str = "container-fs";
 const CONTAINER_HOSTNAME: &str = "cfs-container";
-const STACK_SIZE: usize = 1024 * 1024;
+const MAX_PIDS: &str = "20";
+const NOTIFY_ON_RELEASE: &str = "1";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -103,7 +105,7 @@ fn set_cgroups() {
     let cgroups = path::Path::new("/sys/fs/cgroup");
     let pids = cgroups.join("pids").join("cfs");
 
-    // should be permissions 0700: owner can read, write, execute
+    // permissions 0755
     let mkdir_flags = Mode::S_IRWXU | Mode::S_IRGRP | Mode::S_IWGRP | Mode::S_IROTH | Mode::S_IWOTH;
 
     match unistd::mkdir(&pids, mkdir_flags){
@@ -111,13 +113,13 @@ fn set_cgroups() {
         Err(err) => println!("warning from mkdir: {:?}", err)
     };
 
+    // permissions 0700: owner can read, write, execute
     let cgroup_file_flags = Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IXUSR;
 
-    // TODO: set as a constant
-    let max_pids = "20";
+    let max_pids = MAX_PIDS;
     write_file(pids.join("pids.max"), max_pids, cgroup_file_flags);
 
-    let notify_on_release = "1";
+    let notify_on_release = NOTIFY_ON_RELEASE;
     write_file(
         pids.join("notify_on_release"),
         notify_on_release,
