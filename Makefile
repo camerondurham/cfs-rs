@@ -6,5 +6,5 @@ build:
 run: build
 	docker run --privileged -it cfs-rs:v1
 
-test: build
-	docker run --privileged -it cfs-rs:v1 cargo run run ls -l
+run-now:
+	docker run --privileged -it cfs-rs:v1

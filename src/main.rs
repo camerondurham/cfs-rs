@@ -7,8 +7,9 @@ use std::{
 
 use std::{env, fs, path, process, u8};
 
-const CHROOT_DIR_NAME: &str = "ubuntu-fs";
+const CHROOT_DIR_NAME: &str = "container-fs";
 const CONTAINER_HOSTNAME: &str = "cfs-container";
+const STACK_SIZE: usize = 1024 * 1024;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -28,7 +29,11 @@ fn main() {
 
 fn child_process(args: &Vec<String>, hostname: &str, chroot_dir: &str) -> isize {
     match sched::unshare(sched::CloneFlags::CLONE_NEWNS) {
-        Ok(_) => println!("unshare successful"),
+        Ok(_) => {
+            if env::var("DEBUG").is_ok() {
+                println!("unshare successful")
+            }
+        }
         Err(err) => panic!("failed to unshare: {:?}", err),
     };
 
@@ -40,12 +45,13 @@ fn child_process(args: &Vec<String>, hostname: &str, chroot_dir: &str) -> isize 
     // run command in isolated environment
     process::Command::new(&args[2])
         .args(&args[3..])
-        .stdin(process::Stdio::piped())
-        .stderr(process::Stdio::piped())
+        .stdin(process::Stdio::inherit())
+        .stdout(process::Stdio::inherit())
+        .stderr(process::Stdio::inherit())
         .spawn()
         .expect("failed to spawn child process")
         .wait()
-        .expect("failed to wait for child process");
+        .unwrap();
 
     unmount_post_run();
     return 0;
@@ -77,14 +83,18 @@ fn run(args: &Vec<String>) {
     };
 
     let child_process_box = Box::new(|| child_process(args, CONTAINER_HOSTNAME, chroot_path));
-    let mut stack: [u8; 1024 * 1024] = [0; 1024 * 1024];
+    let mut stack: [u8; STACK_SIZE] = [0; STACK_SIZE];
     match sched::clone(
         child_process_box,
         &mut stack,
         clone_flags,
         Some(nix::sys::signal::SIGCHLD as i32),
     ) {
-        Ok(_) => println!("clone succeeded"),
+        Ok(_) => {
+            if env::var("DEBUG").is_ok() {
+                println!("clone succeeded")
+            }
+        }
         Err(err) => panic!("clone failed: {:?}", err),
     };
 }
@@ -93,38 +103,39 @@ fn set_cgroups() {
     let cgroups = path::Path::new("/sys/fs/cgroup");
     let pids = cgroups.join("pids").join("cfs");
 
+    // should be permissions 0700: owner can read, write, execute
     let mkdir_flags = Mode::S_IRWXU | Mode::S_IRGRP | Mode::S_IWGRP | Mode::S_IROTH | Mode::S_IWOTH;
 
-    // should be permissions 0700: owner can read, write, execute
-    log_result(LogResult {
-        result: unistd::mkdir(&pids, mkdir_flags),
-        task_message: "mkdir /sys/fs/cgroup/pids/cfs",
-    });
+    match unistd::mkdir(&pids, mkdir_flags){
+        Ok(_) => {},
+        Err(err) => println!("warning from mkdir: {:?}", err)
+    };
 
-    // TODO: rewrite this mess as a function
     let cgroup_file_flags = Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IXUSR;
 
+    // TODO: set as a constant
     let max_pids = "20";
-    write_cgroups_file(pids.join("pids.max"), max_pids, cgroup_file_flags);
+    write_file(pids.join("pids.max"), max_pids, cgroup_file_flags);
 
     let notify_on_release = "1";
-    write_cgroups_file(
+    write_file(
         pids.join("notify_on_release"),
         notify_on_release,
         cgroup_file_flags,
     );
 
-    let cgroup_procs = stringify!(unistd::getpid().as_raw());
-    write_cgroups_file(pids.join("cgroup.procs"), cgroup_procs, cgroup_file_flags);
+    let cgroup_procs = unistd::getpid().to_string();
+    write_file(
+        pids.join("cgroup.procs"),
+        cgroup_procs.as_ref(),
+        cgroup_file_flags,
+    );
 }
 
-fn write_cgroups_file(path: PathBuf, content: &str, file_flags: Mode) {
-    let mut file = match fs::File::create(&path) {
+fn write_file(path: PathBuf, content: &str, flags: Mode) {
+    let mut file = match fs::File::create(&path.to_str().unwrap()) {
         Ok(file) => file,
-        Err(err) => panic!(
-            "error creating cgroup.procs file at path [{:?}]: {:?}",
-            path, err
-        ),
+        Err(err) => panic!("error creating file at path [{:?}]: {:?}", path, err),
     };
 
     file.write_all(content.as_bytes())
@@ -133,7 +144,7 @@ fn write_cgroups_file(path: PathBuf, content: &str, file_flags: Mode) {
     sys::stat::fchmodat(
         Some(file.as_raw_fd()),
         &path,
-        file_flags,
+        flags,
         sys::stat::FchmodatFlags::FollowSymlink,
     )
     .expect("failed to set permissions");
@@ -144,19 +155,19 @@ fn set_hostname(hostname: &str) {
 }
 
 fn set_chroot(path: &str) {
-    log_result(LogResult {
+    util::log_result(util::Result {
         result: unistd::chroot(path),
-        task_message: "setting chroot",
+        task_message: "set chroot",
     });
 
-    log_result(LogResult {
+    util::log_result(util::Result {
         result: unistd::chdir("/"),
-        task_message: "changing root directory",
+        task_message: "change directory to /",
     });
 }
 
 fn mount_fs() {
-    log_result(LogResult {
+    util::log_result(util::Result {
         result: mount::mount(
             Some("proc"),
             "proc",
@@ -164,27 +175,32 @@ fn mount_fs() {
             mount::MsFlags::empty(),
             Some(""),
         ),
-        task_message: "mounting proc",
+        task_message: "mount proc",
     });
 }
 
 fn unmount_post_run() {
-    log_result(LogResult {
+    util::log_result(util::Result {
         result: mount::umount("/proc"),
         task_message: "unmounting proc",
     });
 }
 
-// TODO: move to utility module
+mod util {
+    use std::env;
+    pub struct Result<'a> {
+        pub result: core::result::Result<(), nix::Error>,
+        pub task_message: &'a str,
+    }
 
-struct LogResult<'a> {
-    result: Result<(), nix::Error>,
-    task_message: &'a str,
-}
-
-fn log_result<'a>(mr: LogResult<'a>) {
-    match mr.result {
-        Ok(_) => println!("success: {}", mr.task_message),
-        Err(err) => panic!("failure: error with {}: \n{}", mr.task_message, err),
+    pub fn log_result<'a>(mr: Result<'a>) {
+        match mr.result {
+            Ok(_) => {
+                if env::var("DEBUG").is_ok() {
+                    println!("success: {}", mr.task_message)
+                }
+            }
+            Err(err) => panic!("failure: error with {}: \n{}", mr.task_message, err),
+        }
     }
 }
