@@ -1,8 +1,9 @@
 use nix::{mount, sched, sys, sys::stat::*, unistd};
 use std::{
     io::{prelude::*, BufReader},
+    iter::FromIterator,
     os::unix::prelude::AsRawFd,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use std::process::{self, Command, Stdio};
@@ -20,8 +21,9 @@ pub enum CmdType {
 
 pub struct Container {
     pub args: Vec<String>,
-    pub debug: bool,
     pub cmd_type: CmdType,
+    pub debug: bool,
+    chroot_path: String,
 }
 
 impl Container {
@@ -30,17 +32,22 @@ impl Container {
             match &command[..] {
                 "run" => {
                     return Container {
-                        // TODO: only clone indices 2..
-                        args: args.clone(),
-                        debug: in_debug_mode(),
+                        args: Vec::from_iter(args[2..].iter().cloned()),
                         cmd_type: CmdType::RUN,
+                        debug: util::in_debug_mode(),
+                        chroot_path: filesystem::join_current_dir(CHROOT_DIR_NAME).expect(
+                            format!("failed to find chroot dir: {:?}", CHROOT_DIR_NAME).as_str(),
+                        ),
                     };
                 }
                 "shell" => {
                     return Container {
                         args: vec![String::from("/bin/bash")],
-                        debug: in_debug_mode(),
                         cmd_type: CmdType::SHELL,
+                        debug: util::in_debug_mode(),
+                        chroot_path: filesystem::join_current_dir(CHROOT_DIR_NAME).expect(
+                            format!("failed to find chroot dir: {:?}", CHROOT_DIR_NAME).as_str(),
+                        ),
                     };
                 }
                 _ => {
@@ -54,23 +61,18 @@ impl Container {
     }
 
     pub fn run(self: Self) {
-        println!("Running [parent]: {:?} as {}", &self.args[..], process::id());
+        println!(
+            "Running [parent]: {:?} as {}",
+            &self.args[..],
+            process::id()
+        );
 
         let clone_flags = sched::CloneFlags::CLONE_NEWUTS
             | sched::CloneFlags::CLONE_NEWPID
             | sched::CloneFlags::CLONE_NEWNS;
 
-        let current_dir = std::env::current_dir().unwrap();
-
-        let current_dir = match current_dir.as_os_str().to_str() {
-            Some(s) => s,
-            None => panic!("error getting current dir"),
-        };
-
-        let chroot_path = Path::new(current_dir).join(CHROOT_DIR_NAME);
-        let chroot_path = chroot_path.to_str().unwrap();
-
-        let child_process_box = Box::new(|| child_process(&self.args, CONTAINER_HOSTNAME, chroot_path));
+        let child_process_box =
+            Box::new(|| child_process(&self.args, CONTAINER_HOSTNAME, self.chroot_path.as_str()));
         const STACK_SIZE: usize = 1024 * 1024;
         let mut stack: [u8; STACK_SIZE] = [0; STACK_SIZE];
         match sched::clone(
@@ -80,7 +82,7 @@ impl Container {
             Some(nix::sys::signal::SIGCHLD as i32),
         ) {
             Ok(_) => {
-                if env::var("DEBUG").is_ok() {
+                if self.debug {
                     println!("clone succeeded")
                 }
             }
@@ -89,25 +91,35 @@ impl Container {
     }
 }
 
-
 // run user input command in child process
 fn child_process(args: &Vec<String>, hostname: &str, chroot_dir: &str) -> isize {
     setup(hostname, chroot_dir);
 
     // run command in isolated environment
-    // TODO: read/write from child process stdin and stdout
-    Command::new(&args[2])
-        .args(&args[3..])
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("error spawning child process")
-        .wait()
-        .expect("error waiting for child process to exit");
+    let es: process::ExitStatus;
+    if args.len() > 1 {
+        es = Command::new(&args[0])
+            .args(&args[1..])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("error spawning child process")
+            .wait()
+            .expect("error waiting for child process to exit");
+    } else {
+        es = Command::new(&args[0])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("error spawning child process")
+            .wait()
+            .expect("error waiting for child process to exit");
+    }
 
     unmount_post_run();
-    return 0;
+    return es.code().unwrap() as isize;
 }
 
 fn child_shell(hostname: &str, chroot_dir: &str) -> isize {
@@ -245,15 +257,24 @@ mod util {
     pub fn log_result<'a>(mr: Result<'a>) {
         match mr.result {
             Ok(_) => {
-                if env::var("DEBUG").is_ok() {
+                if in_debug_mode() {
                     println!("success: {}", mr.task_message)
                 }
             }
             Err(err) => panic!("failure: error with {}: \n{}", mr.task_message, err),
         }
     }
+
+    pub fn in_debug_mode() -> bool {
+        env::var("DEBUG").is_ok()
+    }
 }
 
-fn in_debug_mode() -> bool {
-    env::var("DEBUG").is_ok()
+mod filesystem {
+    use std::{env, path::Path};
+    pub fn join_current_dir(join_path: &str) -> Option<String> {
+        let current_dir = env::current_dir().unwrap();
+        let joined_path = Path::new(current_dir.as_path()).join(join_path);
+        Some(joined_path.to_str().unwrap().to_string())
+    }
 }
