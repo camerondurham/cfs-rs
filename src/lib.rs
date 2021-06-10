@@ -1,10 +1,8 @@
 use nix::{sched, sys::stat::*, unistd};
-use std::iter::FromIterator;
 
 use std::process::{self, Command, Stdio};
 use std::u8;
 
-const DIR_NAME: &str = "container-fs";
 const CONTAINER_HOSTNAME: &str = "cfs-container";
 const MAX_PIDS: &str = "20";
 
@@ -16,35 +14,45 @@ pub enum CmdType {
 pub struct Container {
     pub args: Vec<String>,
     pub cmd_type: CmdType,
-    path: String,
+    chroot_path: String,
+}
+
+pub struct ContainerBuilder {
+    args: Vec<String>,
+    cmd_type: CmdType,
+    chroot_path: String,
+}
+
+impl ContainerBuilder {
+  pub fn new() -> Self {
+    ContainerBuilder {
+      args: Vec::new(),
+      cmd_type: CmdType::RUN,
+      chroot_path: String::new(),
+    }
+  }
+  pub fn args(mut self, args: Vec<String>) -> Self {
+    self.args = args;
+    self
+  }
+  pub fn chroot_path(mut self, path: String) -> Self {
+    self.chroot_path = path;
+    self
+  }
+  pub fn cmd_type(mut self, cmdtype: CmdType) -> Self {
+    self.cmd_type = cmdtype;
+    self
+  }
+  pub fn create(self) -> Container {
+    Container {
+      args: self.args,
+      cmd_type: self.cmd_type,
+      chroot_path: self.chroot_path,
+    }
+  }
 }
 
 impl Container {
-    pub fn new(args: &Vec<String>) -> Self {
-        if args.len() < 3 {
-            panic!("error: you must provide at least two arguments");
-        }
-        let command = args.get(1).unwrap();
-        match &command[..] {
-            "run" => Container {
-                args: Vec::from_iter(args[2..].iter().cloned()),
-                cmd_type: CmdType::RUN,
-                path: util::pwd_join(DIR_NAME)
-                    .expect(format!("invalid path [{:?}]", DIR_NAME).as_str()),
-            },
-            "shell" => Container {
-                args: vec![String::from("/bin/bash")],
-                cmd_type: CmdType::SHELL,
-                path: util::pwd_join(DIR_NAME)
-                    .expect(format!("invalid path [{:?}]", DIR_NAME).as_str()),
-            },
-            _ => {
-                println!("command not recognized");
-                process::exit(1)
-            }
-        }
-    }
-
     pub fn child_process(
         self: &Self,
         args: &Vec<String>,
@@ -60,7 +68,6 @@ impl Container {
                 .args(&args[1..])
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
                 .spawn()
                 .expect("error spawning child process")
                 .wait()
@@ -69,7 +76,6 @@ impl Container {
             es = Command::new(&args[0])
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
                 .spawn()
                 .expect("error spawning child process")
                 .wait()
@@ -91,30 +97,24 @@ impl Container {
             | sched::CloneFlags::CLONE_NEWPID
             | sched::CloneFlags::CLONE_NEWNS;
 
-            // TODO: make hostname configurable
+        // TODO: make hostname configurable
         let child_process_box =
-            Box::new(|| self.child_process(&self.args, CONTAINER_HOSTNAME, self.path.as_str()));
+            Box::new(|| self.child_process(&self.args, CONTAINER_HOSTNAME, self.chroot_path.as_str()));
         const STACK_SIZE: usize = 1024 * 1024;
         let mut stack: [u8; STACK_SIZE] = [0; STACK_SIZE];
-        match sched::clone(
+        sched::clone(
             child_process_box,
             &mut stack,
             clone_flags,
             Some(nix::sys::signal::SIGCHLD as i32),
-        ) {
-            Ok(_) => {
-                if util::in_debug_mode() {
-                    println!("clone succeeded")
-                }
-            }
-            Err(err) => panic!("clone failed: {:?}", err),
-        };
+        )
+        .expect("clone failed");
     }
 }
 
 // run user input command in child process
 
-mod util {
+pub mod util {
     use nix::{self, sys::stat::*};
     use std::os::unix::prelude::AsRawFd;
     use std::{
@@ -123,10 +123,6 @@ mod util {
         io::prelude::*,
         path::{Path, PathBuf},
     };
-
-    pub fn in_debug_mode() -> bool {
-        std::env::var("DEBUG").is_ok()
-    }
 
     pub fn pwd_join(join_path: &str) -> Option<String> {
         let current_dir = env::current_dir().unwrap();
@@ -162,17 +158,9 @@ fn setup(hostname: &str, chroot_dir: &str) {
 }
 
 mod namespace {
-    use super::util;
     use nix::sched;
     pub fn isolated_ns() {
-        match sched::unshare(sched::CloneFlags::CLONE_NEWNS) {
-            Ok(_) => {
-                if util::in_debug_mode() {
-                    println!("unshare successful")
-                }
-            }
-            Err(err) => panic!("failed to unshare: {:?}", err),
-        };
+        sched::unshare(sched::CloneFlags::CLONE_NEWNS).expect("failed to unshare");
     }
 }
 
