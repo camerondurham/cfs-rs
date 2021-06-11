@@ -3,14 +3,8 @@ use nix::{sched, sys::stat::*, unistd};
 use std::process::{self, Command, Stdio};
 use std::u8;
 
-pub enum CmdType {
-    RUN,
-    SHELL,
-}
-
 pub struct Container {
     pub args: Vec<String>,
-    pub cmd_type: CmdType,
     chroot_path: String,
     cgroup_name: String,
     hostname: String,
@@ -19,7 +13,6 @@ pub struct Container {
 
 pub struct ContainerBuilder {
     args: Vec<String>,
-    cmd_type: CmdType,
     chroot_path: String,
     cgroup_name: String,
     hostname: String,
@@ -30,7 +23,6 @@ impl ContainerBuilder {
     pub fn new() -> Self {
         ContainerBuilder {
             args: Vec::new(),
-            cmd_type: CmdType::RUN,
             chroot_path: String::new(),
             cgroup_name: String::new(),
             hostname: String::new(),
@@ -43,10 +35,6 @@ impl ContainerBuilder {
     }
     pub fn chroot_path(mut self, path: String) -> Self {
         self.chroot_path = path;
-        self
-    }
-    pub fn cmd_type(mut self, cmdtype: CmdType) -> Self {
-        self.cmd_type = cmdtype;
         self
     }
     pub fn max_pids(mut self, max_pids: u8) -> Self {
@@ -64,7 +52,6 @@ impl ContainerBuilder {
     pub fn create(self) -> Container {
         Container {
             args: self.args,
-            cmd_type: self.cmd_type,
             chroot_path: self.chroot_path,
             cgroup_name: self.cgroup_name,
             hostname: self.hostname,
@@ -93,6 +80,7 @@ impl Container {
                 .wait()
                 .expect("error waiting for child process to exit");
         } else {
+            // TODO: spawn long-running process, probably need to fork process
             es = Command::new(&self.args[0])
                 .stdin(Stdio::inherit())
                 .stderr(Stdio::inherit())
@@ -108,7 +96,6 @@ impl Container {
     }
 
     pub fn run(self: Self) {
-
         let clone_flags = sched::CloneFlags::CLONE_NEWUTS
             | sched::CloneFlags::CLONE_NEWPID
             | sched::CloneFlags::CLONE_NEWNS;
@@ -201,9 +188,9 @@ mod cgroups {
         let cg_path = path::Path::new("/sys/fs/cgroup/pids");
         let cg_path = cg_path.join(container.cgroup_name.clone());
         println!("removing directory: {:?}", cg_path);
-        match std::fs::remove_dir_all(cg_path){
-               Ok(_) => (),
-               Err(err) => println!("error removing directory: {:?}", err),
+        match std::fs::remove_dir_all(cg_path) {
+            Ok(_) => (),
+            Err(err) => println!("error removing directory: {:?}", err),
         };
     }
 
@@ -213,8 +200,7 @@ mod cgroups {
         let pids = cgroups.join("pids").join(container.cgroup_name.clone());
 
         // permissions 0775
-        let mkdir_flags =
-            Mode::S_IRWXU | Mode::S_IRWXG | Mode::S_IROTH | Mode::S_IWOTH;
+        let mkdir_flags = Mode::S_IRWXU | Mode::S_IRWXG | Mode::S_IROTH | Mode::S_IWOTH;
 
         // TODO: remove directory once finished
         match unistd::mkdir(&pids, mkdir_flags) {

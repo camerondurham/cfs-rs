@@ -1,4 +1,7 @@
 FROM ubuntu:20.04 as rootfs
+RUN apt-get update && apt-get install -y \
+  gcc \
+  g++
 FROM rust:1.52 as builder
 
 COPY --from=rootfs / /home/container-fs
@@ -10,7 +13,8 @@ RUN cargo install --path . \
   && cargo build \
   && touch /DOCKER_ROOT_DIR \
   && touch /home/container-fs/CONTAINER_ROOT_DIR \
-  && cp /usr/src/cfs/target/release/cfs /usr/local/bin
+  && cp /usr/src/cfs/target/release/cfs /usr/local/bin \
+  && mv /usr/src/cfs/check /home/container-fs
 
 WORKDIR /home
 CMD /bin/bash
