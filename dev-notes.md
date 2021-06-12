@@ -105,7 +105,7 @@ The goal of executing these commands is to have a filesystem that can be mounted
 
 ```bash
 mkdir /newroot
-mount -n -t tmpfs -o size=500M none /newroot
+mount -n -t tmpfs -o size=500M,rw none /newroot
 cd container-fs # (containing the root filesystem contents)
 find . -depth -xdev -print | cpio -pd --quiet /newroot
 cd /newroot
@@ -122,28 +122,175 @@ linux commands to "make" containers
 
 Mount filesystem so `pivot_root` succeeds:
 
+Commands blindly copied from a 2015 talk at Docker Con: 
+https://www.youtube.com/watch?v=sK5i-N34im8
+
 ```bash
+# unshare these namespaces - isolate the container
+unshare --mount --uts --ipc --net --pid --fork bash
+
+# set the new hostname
+hostname tupperware
+
+# start a shell into the isolated environment
+exec bash
+
 # --bind mount remounts part of the file hierarchy somewhere else
 mount --bind /containers/tupperware /containers/tupperware
 
 # --move moves a mounted fs to another place atomically
-mount --move /containers/tupperware /containers/tupperware
-```
+mount --move /containers/tupperware /containers
 
-To unmount all devices:
+# remount so it's writable
+mount -o remount,rw /containers
 
-```bash
-umount -a
-```
+# go to the newly mounted filesystem
+cd /containers
+mkdir oldroot
+pivot_root . oldroot
+cd /
 
-To unmount the "oldroot"
-
-```bash
-umount -l /oldroot/
-```
-
-Remount proc:
-
-```bash
+# remount so we can see proceses
 mount -t proc none /proc
+
+# To unmount all devices:
+umount -a
+
+# verify host system mounts are not there anymore
+mount
+
+# Remount proc:
+mount -t proc none /proc
+
+# To unmount the "oldroot"
+umount -l /oldroot/
+
+# check mounts again
+mount
+
+# do stuff in the container (not that you won't be able to access the internet yet!)
+
+# now get a "real shell" into the container
+cd /
+exec chroot / sh
+```
+
+
+### commands that should be made into a shell script
+
+```bash
+# create workspace
+mkdir /container
+cp -r /home/container-fs/* /container
+
+# unshare these namespaces - isolate the container
+unshare --mount --uts --ipc --net --pid --fork bash
+
+# set the new hostname
+hostname tupperware
+
+# start a shell in the new "hostname"
+exec bash
+
+mount --bind /container /container
+
+cd /container
+mkdir oldroot
+pivot_root . oldroot
+cd /
+
+
+
+# mount so we can see processes
+mount -t proc none /proc
+
+# unmount everything
+umount -a
+umount -l /oldroot
+
+# check it out
+mount
+
+# make it writeable
+mount -o remount,rw /
+
+cd /
+exec chroot / sh
+```
+
+### bash session from running the above commands:
+
+```bash
+cam@box:~/projects/cfs-rs$ make run
+docker run --privileged -it cfs-rs:v1
+root@580801bb3cf5:/home# mkdir /container
+root@580801bb3cf5:/home# cp -r /home/container-fs/* /container/
+root@580801bb3cf5:/home# unshare --mount --uts --ipc --net --pid --fork bash
+root@580801bb3cf5:/home# hostname tupperware
+root@580801bb3cf5:/home# exec bash
+root@tupperware:/home# mount --bind /container/ /container/
+root@tupperware:/home# cd /container/
+root@tupperware:/container# mount --bind /container/ /container/^C
+root@tupperware:/container# touch test
+root@tupperware:/container# ls
+CONTAINER_ROOT_DIR  check  home   lib64   mnt   root  srv   tmp
+bin                 dev    lib    libx32  opt   run   sys   usr
+boot                etc    lib32  media   proc  sbin  test  var
+root@tupperware:/container# rm test
+root@tupperware:/container# mkdir oldroot
+root@tupperware:/container# pivot_root . oldroot/
+root@tupperware:/container# cd /
+root@tupperware:/# ls
+CONTAINER_ROOT_DIR  check  home   lib64   mnt      proc  sbin  tmp
+bin                 dev    lib    libx32  oldroot  root  srv   usr
+boot                etc    lib32  media   opt      run   sys   var
+root@tupperware:/# touch test
+root@tupperware:/# mount -t proc none /proc
+root@tupperware:/# umount -a 
+umount: /oldroot/dev: target is busy.
+umount: /oldroot: target is busy.
+root@tupperware:/# mount -l /oldroot
+mount: /oldroot: can't find in /etc/fstab.
+root@tupperware:/# ls
+CONTAINER_ROOT_DIR  check  home   lib64   mnt      proc  sbin  test  var
+bin                 dev    lib    libx32  oldroot  root  srv   tmp
+boot                etc    lib32  media   opt      run   sys   usr
+root@tupperware:/# umount -l /oldroot
+root@tupperware:/# ls
+CONTAINER_ROOT_DIR  check  home   lib64   mnt      proc  sbin  test  var
+bin                 dev    lib    libx32  oldroot  root  srv   tmp
+boot                etc    lib32  media   opt      run   sys   usr
+root@tupperware:/# mount -o remount,rw /
+root@tupperware:/# ls
+CONTAINER_ROOT_DIR  check  home   lib64   mnt      proc  sbin  test  var
+bin                 dev    lib    libx32  oldroot  root  srv   tmp
+boot                etc    lib32  media   opt      run   sys   usr
+root@tupperware:/# ls /
+CONTAINER_ROOT_DIR  check  home   lib64   mnt      proc  sbin  test  var
+bin                 dev    lib    libx32  oldroot  root  srv   tmp
+boot                etc    lib32  media   opt      run   sys   usr
+root@tupperware:/# ls /
+CONTAINER_ROOT_DIR  check  home   lib64   mnt      proc  sbin  test  var
+bin                 dev    lib    libx32  oldroot  root  srv   tmp
+boot                etc    lib32  media   opt      run   sys   usr
+root@tupperware:/# touch test
+root@tupperware:/# cd /
+root@tupperware:/# ls
+CONTAINER_ROOT_DIR  check  home   lib64   mnt      proc  sbin  test  var
+bin                 dev    lib    libx32  oldroot  root  srv   tmp
+boot                etc    lib32  media   opt      run   sys   usr
+root@tupperware:/# exec chroot / sh
+# ls
+CONTAINER_ROOT_DIR  check  home   lib64   mnt      proc  sbin  test  var
+bin                 dev    lib    libx32  oldroot  root  srv   tmp
+boot                etc    lib32  media   opt      run   sys   usr
+# touch test
+# mount
+overlay on / type overlay (rw,relatime,lowerdir=/var/lib/docker/overlay2/l/KLXXAWEUM45TIMFIJLFCY4QXCS:/var/lib/docker/overlay2/l/SLM5OTDMR4VCBDJYXH5WT2QOPA:/var/lib/docker/overlay2/l/A55GRKNQXDYWUHJXQONPJLEJFE:/var/lib/docker/overlay2/l/N5MW27QCGEYCWLBX2VCCINNVXB:/var/lib/docker/overlay2/l/FUKLNYGSSYXJ7IG4IWHQ6UIJJM:/var/lib/docker/overlay2/l/WEL7JYBL7YIHU25BE2QIDTKKNN:/var/lib/docker/overlay2/l/S2Z4KOIKOXHPLKIKL2HQWXGR77:/var/lib/docker/overlay2/l/7BA7AKGZXVQJQMKFD7QPVBT7N5:/var/lib/docker/overlay2/l/ETF7NVENOK7KEMQ2ITVWXU4URJ:/var/lib/docker/overlay2/l/VBOZYMOQRX6OTSGU45JLRBKD6V:/var/lib/docker/overlay2/l/OPKG3PJ5K3USYVADCFXMBJVYA7:/var/lib/docker/overlay2/l/F4GG4YRTMYVPIWO32ZQCZTKAG6,upperdir=/var/lib/docker/overlay2/6d8483209333b20c726fa78ad7480e81029fb4e59971d4b6bc5ec0886680d79d/diff,workdir=/var/lib/docker/overlay2/6d8483209333b20c726fa78ad7480e81029fb4e59971d4b6bc5ec0886680d79d/work)
+none on /proc type proc (rw,relatime)
+# ps
+  PID TTY          TIME CMD
+    1 ?        00:00:00 sh
+   26 ?        00:00:00 ps
+# 
 ```
