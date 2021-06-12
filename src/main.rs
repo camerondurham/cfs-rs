@@ -15,7 +15,6 @@ fn main() {
 
     let command = args.get(1).unwrap();
 
-    // let chroot_path = cfs::util::pwd_join(DIR_NAME).unwrap();
     let chroot_path = check_var("CHROOT_PATH", cfs::util::pwd_join(DIR_NAME).unwrap());
     let container_name = check_var("CONTAINER_NAME", String::from(CONTAINER_NAME));
 

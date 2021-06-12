@@ -80,7 +80,6 @@ impl Container {
                 .wait()
                 .expect("error waiting for child process to exit");
         } else {
-            // TODO: spawn long-running process, probably need to fork process
             es = Command::new(&self.args[0])
                 .stdin(Stdio::inherit())
                 .stderr(Stdio::inherit())
@@ -154,6 +153,7 @@ fn setup(container: &Container) {
     namespace::isolated_ns();
     syscall::set_hostname(container.hostname.as_str());
     cgroups::set_cgroups(container);
+    // TODO: call pivot_root
     syscall::set_chroot(container.chroot_path.as_ref());
     proc::mount_proc();
 }
@@ -175,6 +175,14 @@ mod syscall {
         // TODO: chroot may not be easy enough to "undo" - look into pivot_root instead
         unistd::chroot(path).expect("set chroot");
         unistd::chdir("/").expect("change directory to /");
+    }
+
+    #[allow(dead_code)]
+    pub fn pivot_root(new_root: &str, old_root: &str) {
+        match unistd::pivot_root(new_root, old_root) {
+            Ok(_) => (),
+            Err(error) => println!("Error pivoting root: {}", error),
+        }
     }
 }
 
