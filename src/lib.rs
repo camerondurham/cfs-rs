@@ -90,7 +90,7 @@ impl Container {
                 .expect("error waiting for child process to exit");
         }
 
-        proc::unmount_post_run();
+        mounts::unmount_post_run();
         return es.code().unwrap() as isize;
     }
 
@@ -115,13 +115,14 @@ impl Container {
 // run user input command in child process
 
 pub mod util {
-    use nix::{self, sys::stat::*};
+    use nix::{self, sys::stat::*, unistd};
     use std::{
         env,
         fs::File,
         io::prelude::*,
         os::unix::prelude::AsRawFd,
         path::{Path, PathBuf},
+        process::Command,
     };
 
     pub fn pwd_join(join_path: &str) -> Option<String> {
@@ -147,15 +148,53 @@ pub mod util {
         )
         .expect("failed to set permissions");
     }
+
+    pub fn pivot_root(container_fs_path: &str) {
+        unistd::chdir(container_fs_path).expect(format!("error changing to directory: {:?}", container_fs_path).as_str());
+
+        let mkdir_flags = Mode::S_IRWXU | Mode::S_IRWXG | Mode::S_IROTH | Mode::S_IWOTH;
+        let old_root= "oldroot";
+        // TODO: remove everything first with fs::remove_dir_all
+        let _res = unistd::mkdir(old_root, mkdir_flags);
+
+        // syscall::pivot_root(".", old_root);
+        match unistd::pivot_root(".", old_root) {
+            Ok(_) => (),
+            Err(error) => println!("Error pivoting root: {}", error),
+        }
+
+        unistd::chdir("/").expect("unable to change into root directory");
+    }
+
+    #[allow(dead_code)]
+    pub fn make_temp_fs(temp_dir_path: &str, fs_src: &str) {
+        // permissions 0775
+        let mkdir_flags = Mode::S_IRWXU | Mode::S_IRWXG | Mode::S_IROTH | Mode::S_IWOTH;
+        let _res = unistd::mkdir(temp_dir_path, mkdir_flags);
+            
+
+        let _exit_status = Command::new("/bin/cp")
+        .args(vec!["-r", fs_src, temp_dir_path])
+        .spawn()
+        .expect("error spawning cp command")
+        .wait()
+        .expect("error waiting for cp process to exit");
+    }
 }
 
 fn setup(container: &Container) {
+
     namespace::isolated_ns();
     syscall::set_hostname(container.hostname.as_str());
+    mounts::bind_mount( container.chroot_path.as_ref());
     cgroups::set_cgroups(container);
-    // TODO: call pivot_root
-    syscall::set_chroot(container.chroot_path.as_ref());
-    proc::mount_proc();
+
+    // let last_dir = path::Path::new(container.chroot_path.as_str()).file_stem().unwrap();
+    // let container_fs_path = path::Path::new(container_fs_path).join(last_dir.to_str().unwrap());
+    util::pivot_root(container.chroot_path.as_ref());
+
+    syscall::set_chroot("/");
+    mounts::mount_proc();
 }
 
 mod namespace {
@@ -177,13 +216,9 @@ mod syscall {
         unistd::chdir("/").expect("change directory to /");
     }
 
-    #[allow(dead_code)]
-    pub fn pivot_root(new_root: &str, old_root: &str) {
-        match unistd::pivot_root(new_root, old_root) {
-            Ok(_) => (),
-            Err(error) => println!("Error pivoting root: {}", error),
-        }
-    }
+    // #[allow(dead_code)]
+    // pub fn pivot_root(new_root: &str, old_root: &str) {
+    // }
 }
 
 mod cgroups {
@@ -230,7 +265,7 @@ mod cgroups {
     }
 }
 
-mod proc {
+mod mounts {
     use nix::mount;
 
     pub fn mount_proc() {
@@ -242,6 +277,12 @@ mod proc {
             Some(""),
         )
         .expect("mount proc");
+    }
+
+    pub fn bind_mount(root_fs_path: &str) {
+        // might need to specify fstype as temp?
+        // see `man mount`
+        let _er = mount::mount(Some(root_fs_path),root_fs_path,None::<&str>,mount::MsFlags::MS_BIND | mount::MsFlags::MS_REC,None::<&str>,);
     }
 
     pub fn unmount_post_run() {

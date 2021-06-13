@@ -1,2 +1,6 @@
 Dockerfile
+target/
 container-fs/
+*.md
+*.gz
+*.code-workspace
