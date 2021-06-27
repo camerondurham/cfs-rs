@@ -250,7 +250,7 @@ root@tupperware:/# umount -a
 umount: /oldroot/dev: target is busy.
 umount: /oldroot: target is busy.
 root@tupperware:/# mount -l /oldroot
-mount: /oldroot: can't find in /etc/fstab.
+mount: /oldroot: can\'t find in /etc/fstab.
 root@tupperware:/# ls
 CONTAINER_ROOT_DIR  check  home   lib64   mnt      proc  sbin  test  var
 bin                 dev    lib    libx32  oldroot  root  srv   tmp

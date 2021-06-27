@@ -8,7 +8,7 @@ const CONTAINER_NAME: &str = "cfs-container";
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 2 || args.get(1).unwrap().eq("run") && args.len() < 3 {
+    if args.len() < 2 || (args.get(1).unwrap().eq("run") && args.len() < 3) {
         println!("error: you must provide at least one argument or two arguments with `cfs run`");
         process::exit(1);
     }
