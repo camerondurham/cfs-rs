@@ -2,7 +2,7 @@ FROM ubuntu:20.04 as rootfs
 ENV TESTING_PROGRAMS="gcc g++"
 RUN apt-get update && apt-get install -y ${TESTING_PROGRAMS}
 
-FROM rust:1.52 as builder
+FROM rust:1.53 as builder
 COPY --from=rootfs / /home/container-fs
 WORKDIR /usr/src/cfs
 COPY . .

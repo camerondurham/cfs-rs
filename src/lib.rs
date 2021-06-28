@@ -167,12 +167,10 @@ pub mod util {
 
             // remove everything first with fs::remove_dir_all if it exists
             let _res = std::fs::remove_dir_all(old_root);
-            println!("remove_dir_all result: {:?}", _res);
         }
 
         let _res = unistd::mkdir(old_root, mkdir_flags);
 
-        // syscall::pivot_root(".", old_root);
         match unistd::pivot_root(".", old_root) {
             Ok(_) => (),
             Err(error) => println!("Error pivoting root: {}", error),
@@ -202,8 +200,6 @@ fn setup(container: &Container) {
     mounts::bind_mount(container.chroot_path.as_ref());
     cgroups::set_cgroups(container).unwrap();
 
-    // let last_dir = path::Path::new(container.chroot_path.as_str()).file_stem().unwrap();
-    // let container_fs_path = path::Path::new(container_fs_path).join(last_dir.to_str().unwrap());
     util::pivot_root(container.chroot_path.as_ref());
 
     syscall::set_chroot("/");
@@ -224,20 +220,19 @@ mod syscall {
     }
 
     pub fn set_chroot(path: &str) {
-        // TODO: chroot may not be easy enough to "undo" - look into pivot_root instead
         unistd::chroot(path).expect("set chroot");
         unistd::chdir("/").expect("change directory to /");
     }
 
-    // #[allow(dead_code)]
-    // pub fn pivot_root(new_root: &str, old_root: &str) {
-    // }
 }
 
 mod cgroups {
 
     use super::*;
-    use std::{fs, path::{self, PathBuf}};
+    use std::{
+        fs,
+        path::{self, PathBuf},
+    };
 
     #[allow(dead_code)]
     pub fn rm_cgroup_dir(container: &Container) {
@@ -251,65 +246,66 @@ mod cgroups {
         };
     }
 
-    fn set_dir_permissions(dir_path : &PathBuf) -> std::io::Result<()> {
-            // shamelessly copied from https://doc.rust-lang.org/std/fs/fn.read_dir.html
-            for entry in std::fs::read_dir(&dir_path)? {
-                let entry = entry?;
-                let path = entry.path();
-                println!("checking {:?}", path);
-                if path.is_file() {
-                    let mut perm = std::fs::metadata(&path).unwrap().permissions();
-                    println!("setting permissions for {:?}", path);
-                    perm.set_mode(0o666);
-                    std::fs::set_permissions(path, perm).ok();
-                }
-            }
-            Ok(())
+    #[allow(dead_code)]
+    fn container_cgroup_cleanup(container_cg_path: path::PathBuf) -> std::io::Result<()> {
+        // println!("checking path: {:?}", container_cg_path);
+        if container_cg_path.exists() && container_cg_path.is_dir() {
+            set_dir_permissions(&container_cg_path)?;
+
+            let _res = std::fs::remove_dir_all(&container_cg_path);
+            println!("removing cgroup dir remove_dir_all result: {:?}", _res);
+        }
+
+        Ok(())
     }
 
-    // TODO: make # PIDS configurable
+    fn set_dir_permissions(dir_path: &PathBuf) -> std::io::Result<()> {
+        // shamelessly copied from https://doc.rust-lang.org/std/fs/fn.read_dir.html
+        for entry in std::fs::read_dir(&dir_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            // println!("checking {:?}", path);
+            if path.is_file() {
+                let mut perm = std::fs::metadata(&path).unwrap().permissions();
+                // println!("setting permissions for {:?}", path);
+                perm.set_mode(0o777);
+                std::fs::set_permissions(path, perm).ok();
+            }
+        }
+        Ok(())
+    }
+
     pub fn set_cgroups(container: &Container) -> std::io::Result<()> {
         let cgroups = path::Path::new("/sys/fs/cgroup");
         let container_cg_path = cgroups.join("pids").join(container.cgroup_name.clone());
 
-        // permissions 0775
-        let mkdir_flags = Mode::S_IRWXU | Mode::S_IRWXG | Mode::S_IROTH | Mode::S_IWOTH;
+        // permissions 0660: user, group can read and write
+        let file_mode = Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IRGRP | Mode::S_IWGRP;
 
-        // TODO: Move to a separate function!!
-        // remove everything before mkdir if it exists
-        println!("checking path: {:?}", container_cg_path);
-        if container_cg_path.exists() && container_cg_path.is_dir() {
-            
-            set_dir_permissions(&container_cg_path)?;
-
-            let _res = std::fs::remove_dir_all(&container_cg_path);
-            println!("remove_dir_all result: {:?}", _res);
+        if !container_cg_path.exists() {
+            match unistd::mkdir(&container_cg_path, file_mode) {
+                Ok(_) => {}
+                Err(err) => println!("warning from mkdir: {:?}", err),
+            };
         }
 
-        // TODO: instead consider setting permissions with std::fs functions first
-        match unistd::mkdir(&container_cg_path, mkdir_flags) {
-            Ok(_) => {}
-            Err(err) => println!("warning from mkdir: {:?}", err),
-        };
 
-        // permissions 0700: owner can read, write, execute
-        let cg_flags = Mode::S_IRUSR | Mode::S_IWUSR | Mode::S_IXUSR;
-
+        // write max # pids to /sys/fs/cgroup/pids/cfs-container/pids.max
         let max_pids = container.max_pids.to_string();
         util::write_file(
             container_cg_path.join("pids.max"),
             max_pids.as_ref(),
-            cg_flags,
+            file_mode,
         );
 
         // remove new cgroup after process finishes
-        util::write_file(container_cg_path.join("notify_on_release"), "1", cg_flags);
+        util::write_file(container_cg_path.join("notify_on_release"), "1", file_mode);
 
         let cgroup_procs = unistd::getpid().to_string();
         util::write_file(
             container_cg_path.join("cgroup.procs"),
             cgroup_procs.as_ref(),
-            cg_flags,
+            file_mode,
         );
 
         Ok(())
