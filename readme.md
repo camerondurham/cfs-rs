@@ -84,3 +84,10 @@ root@cb3e7658f63f:/home# cfs run ps
     1 ?        00:00:00 cfs
     2 ?        00:00:00 ps
 ```
+
+example 2: restricted view of mounts (still need to fill in output)
+
+```bash
+# run mount in the container
+root@cb3e7658f63f:/home# cfs run mount
+```
